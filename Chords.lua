@@ -92,7 +92,8 @@ local function unwrapAll()
 end
 
 local function wrap(f, header, pre, post)
-    SecureHandlerWrapScript(f, "OnClick", header, pre, post)
+    -- this client's SecureHandlerWrapScript rejects a nil pre-body, so pass empty strings
+    SecureHandlerWrapScript(f, "OnClick", header, pre or "", post or "")
     wrapped[#wrapped + 1] = f
 end
 
