@@ -97,7 +97,11 @@ local function blockList()
     local out = {}
     for _, b in ipairs(bases) do
         if not pass[b] then
-            for _, m in ipairs(mods) do out[#out + 1] = m .. b end
+            for _, m in ipairs(mods) do
+                local key = m .. b
+                local action = GetBindingAction(key)
+                if action and action ~= "" then out[#out + 1] = key end
+            end
         end
     end
     return table.concat(out, " ")
@@ -243,6 +247,7 @@ function Chords:Rebuild()
     ClearOverrideBindings(binder)
 
     local blocked = blockList()
+    self.lastBlocked = blocked
     -- make sure every referenced sub-group has a frame
     for g, grp in pairs(ChordsDB.groups) do
         for _, act in pairs(grp.entries) do
@@ -255,7 +260,7 @@ function Chords:Rebuild()
         local cf = cancelFrame(g)
         wrap(cf, gf, nil, "owner:ClearBindings()")
         gf:SetAttribute("cancel", cf:GetName())
-        gf:SetAttribute("bkeys", ChordsDB.block and blocked or nil)
+        gf:SetAttribute("bkeys", blocked ~= "" and blocked or nil)
 
         local keys = {}
         for k in pairs(grp.entries) do keys[#keys + 1] = k end
@@ -346,7 +351,6 @@ local function help()
     print("  /chords add <group> <key> <spell name | item:Name | macro:/cast ... | group:other>")
     print("  /chords del <group> [key]")
     print("  /chords enter <group> <key|none>   -- bind a key directly (or use the macro)")
-    print("  /chords block on|off               -- block all other keys while a group is open (default off)")
     print("  /chords bar size <20-80>            -- size of the on-screen buttons")
     print("  /chords macro <group>               -- create a '/click' macro to drag onto a bar")
     print("  /chords pass <key> [<key>...]       -- keys NOT blocked while a group is open (e.g. W A S D)")
@@ -449,15 +453,6 @@ function Chords.RenameGroup(old, new)
     return true
 end
 
-function handlers.block(args)
-    local v = args:lower()
-    if v == "on" then ChordsDB.block = true
-    elseif v == "off" then ChordsDB.block = nil
-    else say("block is " .. (ChordsDB.block and "on" or "off") .. ". /chords block on|off") return end
-    say("blocking of other keys while a group is open: " .. (ChordsDB.block and "on" or "off"))
-    Chords:Rebuild()
-end
-
 function handlers.reset()
     ClearOverrideBindings(binder)
     for _, gf in pairs(groupFrames) do
@@ -503,6 +498,7 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
+ev:RegisterEvent("UPDATE_BINDINGS")
 ev:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == "Chords" then
         ChordsDB = ChordsDB or {}
@@ -510,6 +506,12 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         ChordsDB.passthrough = ChordsDB.passthrough or {}
     elseif event == "PLAYER_LOGIN" then
         Chords:Rebuild()
+    elseif event == "UPDATE_BINDINGS" then
+        if ChordsDB and ChordsDB.groups then
+            C_Timer.After(0.5, function()
+                if blockList() ~= Chords.lastBlocked then Chords:Rebuild() end
+            end)
+        end
     elseif event == "PLAYER_REGEN_ENABLED" then
         if Chords.pending then Chords:Rebuild() end
     end
