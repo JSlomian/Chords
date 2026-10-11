@@ -6,3 +6,4 @@
 ## SavedVariables: ChordsDB
 
 Chords.lua
+Editor.lua

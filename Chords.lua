@@ -276,6 +276,7 @@ end
 
 local function help()
     say("commands:")
+    print("  /chords                              -- open the visual editor")
     print("  /chords list")
     print("  /chords add <group> <key> <spell name | item:Name | macro:/cast ... | group:other>")
     print("  /chords del <group> [key]")
@@ -285,6 +286,10 @@ local function help()
 end
 
 local handlers = {}
+
+-- shared with Editor.lua
+Chords.normKey, Chords.normGroup, Chords.parseAction = normKey, normGroup, parseAction
+Chords.spellKnown, Chords.describe = spellKnown, describe
 
 function handlers.list()
     if not next(ChordsDB.groups) then say("no groups yet. /chords add fire 1 Searing Totem") return end
@@ -359,7 +364,9 @@ SLASH_CHORDS1 = "/chords"
 SlashCmdList.CHORDS = function(msg)
     local cmd, rest = msg:match("^(%S*)%s*(.-)$")
     local h = handlers[cmd:lower()]
-    if h then h(rest) else help() end
+    if h then h(rest)
+    elseif cmd == "" and Chords.ToggleEditor then Chords.ToggleEditor()
+    else help() end
 end
 
 ---------------------------------------------------------------------------
