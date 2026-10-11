@@ -18,6 +18,27 @@ local function say(msg) print(PREFIX .. msg) end
 
 local binder = CreateFrame("Frame") -- owner of the persistent "enter" override bindings
 local groupFrames, entryFrames, cancelFrames = {}, {}, {}
+
+-- on-screen bar: a movable strip of visible group buttons (no macro slot needed)
+local DEFAULT_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+local bar = CreateFrame("Frame", "ChordsBar", UIParent)
+bar:SetSize(10, 10)
+bar:SetMovable(true)
+bar:SetClampedToScreen(true)
+bar:SetPoint("CENTER", UIParent, "CENTER", 0, -200)
+
+local function restoreBarPos()
+    local p = ChordsDB.bar
+    if p and p.point then
+        bar:ClearAllPoints()
+        bar:SetPoint(p.point, UIParent, p.point, p.x, p.y)
+    end
+end
+local function saveBarPos()
+    local point, _, _, x, y = bar:GetPoint()
+    ChordsDB.bar = ChordsDB.bar or {}
+    ChordsDB.bar.point, ChordsDB.bar.x, ChordsDB.bar.y = point, x, y
+end
 local wrapped = {}   -- frames that carry wraps from the last rebuild
 local hints = {}     -- group name -> hint text
 local hintFrame
@@ -137,10 +158,28 @@ noop:RegisterForClicks("AnyUp")
 local function groupFrame(g)
     local f = groupFrames[g]
     if not f then
-        f = CreateFrame("Button", "ChordsGroup_" .. g, UIParent, "SecureHandlerClickTemplate")
+        f = CreateFrame("Button", "ChordsGroup_" .. g, bar, "SecureHandlerClickTemplate")
         f:RegisterForClicks("AnyUp")
         f:SetAttribute("_onclick", GROUP_SNIPPET)
         f:HookScript("OnClick", function() showHint(g) end)
+        f:Hide()
+        f.icon = f:CreateTexture(nil, "BACKGROUND")
+        f.icon:SetAllPoints()
+        f.keyText = f:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+        f.keyText:SetPoint("TOPRIGHT", -2, -3)
+        f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+        f:RegisterForDrag("LeftButton")
+        f:HookScript("OnDragStart", function()
+            if IsShiftKeyDown() and not InCombatLockdown() then bar:StartMoving() end
+        end)
+        f:HookScript("OnDragStop", function() bar:StopMovingOrSizing() saveBarPos() end)
+        f:HookScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(hints[g] or g)
+            GameTooltip:AddLine("Shift-drag to move the bar", 0.6, 0.6, 0.6)
+            GameTooltip:Show()
+        end)
+        f:HookScript("OnLeave", function() GameTooltip:Hide() end)
         groupFrames[g] = f
     end
     return f
@@ -258,8 +297,32 @@ function Chords:Rebuild()
         if not ChordsDB.groups[g] then
             gf:SetAttribute("ecount", 0)
             gf:SetAttribute("bkeys", nil)
+            gf:Hide()
         end
     end
+
+    -- lay out the on-screen bar
+    restoreBarPos()
+    local size = ChordsDB.barSize or 40
+    local names = {}
+    for g in pairs(ChordsDB.groups) do names[#names + 1] = g end
+    table.sort(names)
+    local x = 0
+    for _, g in ipairs(names) do
+        local grp, gf = ChordsDB.groups[g], groupFrames[g]
+        if grp.show then
+            gf:ClearAllPoints()
+            gf:SetSize(size, size)
+            gf:SetPoint("LEFT", bar, "LEFT", x, 0)
+            gf.icon:SetTexture(grp.icon or DEFAULT_ICON)
+            gf.keyText:SetText(grp.enter and grp.enter:gsub("SHIFT%-", "S-"):gsub("CTRL%-", "C-"):gsub("ALT%-", "A-") or "")
+            gf:Show()
+            x = x + size + 4
+        else
+            gf:Hide()
+        end
+    end
+    bar:SetSize(math.max(x - 4, 10), size)
 end
 
 ---------------------------------------------------------------------------
@@ -282,6 +345,7 @@ local function help()
     print("  /chords add <group> <key> <spell name | item:Name | macro:/cast ... | group:other>")
     print("  /chords del <group> [key]")
     print("  /chords enter <group> <key|none>   -- bind a key directly (or use the macro)")
+    print("  /chords bar size <20-80>            -- size of the on-screen buttons")
     print("  /chords macro <group>               -- create a '/click' macro to drag onto a bar")
     print("  /chords pass <key> [<key>...]       -- keys NOT blocked while a group is open (e.g. W A S D)")
 end
@@ -381,6 +445,16 @@ function Chords.RenameGroup(old, new)
     end
     Chords:Rebuild()
     return true
+end
+
+function handlers.bar(args)
+    local n = tonumber(args:match("^size%s+(%d+)"))
+    if n then
+        ChordsDB.barSize = math.min(math.max(n, 20), 80)
+        Chords:Rebuild()
+    else
+        say("/chords bar size <20-80>. Tick 'On screen' for a group in the editor; shift-drag a button to move the bar.")
+    end
 end
 
 function handlers.macro(args)

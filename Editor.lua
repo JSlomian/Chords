@@ -470,6 +470,18 @@ local nameHint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 nameHint:SetPoint("LEFT", gName, "RIGHT", 8, 0)
 nameHint:SetText("macro name")
 
+local showCB = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+showCB:SetSize(24, 24)
+showCB:SetPoint("LEFT", nameHint, "RIGHT", 10, 0)
+showCB.text = showCB:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+showCB.text:SetPoint("LEFT", showCB, "RIGHT", 2, 0)
+showCB.text:SetText("On screen")
+showCB:SetScript("OnClick", function(self)
+    if locked() or not selected then self:SetChecked(not self:GetChecked()) return end
+    ChordsDB.groups[selected].show = self:GetChecked() and true or nil
+    Chords:Rebuild()
+end)
+
 local enterLabel = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 enterLabel:SetPoint("TOPLEFT", 200, -94)
 enterLabel:SetText("Open with key:")
@@ -611,7 +623,7 @@ function E:Refresh()
     -- header
     local grp = selected and ChordsDB.groups[selected]
     noGroup:SetShown(not grp)
-    for _, w in ipairs({ iconBtn, gName, nameHint, enterLabel, enterBtn, enterClear, macroBtn, delGroup, addEntry, scroll }) do
+    for _, w in ipairs({ iconBtn, gName, nameHint, showCB, enterLabel, enterBtn, enterClear, macroBtn, delGroup, addEntry, scroll }) do
         w:SetShown(grp ~= nil)
     end
     if not grp then
@@ -619,6 +631,7 @@ function E:Refresh()
         return
     end
     gName:SetText(selected)
+    showCB:SetChecked(grp.show and true or false)
     iconBtn.tex:SetTexture(grp.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     enterBtn:SetText(grp.enter or "(none)")
 
