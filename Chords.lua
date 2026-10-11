@@ -43,8 +43,20 @@ local wrapped = {}   -- frames that carry wraps from the last rebuild
 local hints = {}     -- group name -> hint text
 local hintFrame
 
-local GROUP_SNIPPET = [[
+local CLOSE_SNIPPET = [[
     self:ClearBindings()
+    local n = self:GetAttribute("ecount") or 0
+    for i = 1, n do
+        if self:GetAttribute("eshow" .. i) then
+            local b = self:GetFrameRef("eb" .. i)
+            if b then b:Hide() end
+        end
+    end
+]]
+local CLOSE_CALL = 'owner:RunAttribute("close")'
+
+local GROUP_SNIPPET = [[
+    self:RunAttribute("close")
     if (self:GetAttribute("ecount") or 0) == 0 then return end
     local keys = self:GetAttribute("bkeys")
     if keys then
@@ -58,6 +70,12 @@ local GROUP_SNIPPET = [[
         self:SetBindingClick(true, self:GetAttribute("ekey" .. i), self:GetAttribute("ebtn" .. i))
     end
     self:SetBindingClick(true, "ESCAPE", self:GetAttribute("cancel"))
+    for i = 1, n do
+        if self:GetAttribute("eshow" .. i) then
+            local b = self:GetFrameRef("eb" .. i)
+            if b then b:Show() end
+        end
+    end
 ]]
 
 ---------------------------------------------------------------------------
@@ -132,6 +150,7 @@ local function hideHint()
 end
 
 local function showHint(group)
+    if Chords.hasFlyout and Chords.hasFlyout[group] then return end
     if not hintFrame then
         hintFrame = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
         hintFrame:SetPoint("CENTER", UIParent, "CENTER", 0, -120)
@@ -166,6 +185,7 @@ local function groupFrame(g)
         f = CreateFrame("Button", "ChordsGroup_" .. g, bar, "SecureHandlerClickTemplate")
         f:RegisterForClicks("AnyUp")
         f:SetAttribute("_onclick", GROUP_SNIPPET)
+        f:SetAttribute("close", CLOSE_SNIPPET)
         f:HookScript("OnClick", function() showHint(g) end)
         f:Hide()
         f.icon = f:CreateTexture(nil, "BACKGROUND")
@@ -208,6 +228,19 @@ local function entryFrame(g, i)
         f = CreateFrame("Button", "ChordsEntry_" .. g .. "_" .. i, UIParent, "SecureActionButtonTemplate")
         f:RegisterForClicks("AnyUp")
         f:HookScript("OnClick", hideHint)
+        f:SetFrameStrata("DIALOG")
+        f:Hide() -- shown by the group's secure snippet while the group is open
+        f.icon = f:CreateTexture(nil, "BACKGROUND")
+        f.icon:SetAllPoints()
+        f.keyText = f:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+        f.keyText:SetPoint("TOPRIGHT", -2, -3)
+        f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+        f:HookScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(self.label or "")
+            GameTooltip:Show()
+        end)
+        f:HookScript("OnLeave", function() GameTooltip:Hide() end)
         entryFrames[g][i] = f
     end
     return f
@@ -228,6 +261,23 @@ local function setAction(f, act)
     end
 end
 
+local function shortKey(k)
+    return (k:gsub("SHIFT%-", "S-"):gsub("CTRL%-", "C-"):gsub("ALT%-", "A-"))
+end
+
+local function actionIcon(act)
+    local icon
+    if act.spell then
+        local _, i = spellKnown(act.spell)
+        icon = i
+    elseif act.item then
+        icon = select(10, GetItemInfo(act.item))
+    elseif act.macro then
+        icon = "Interface\\Icons\\INV_Misc_Note_01"
+    end
+    return icon or DEFAULT_ICON
+end
+
 local function describe(act)
     return act.spell or (act.item and ("item: " .. act.item)) or (act.macro and "macro")
         or (act.group and ("group: " .. act.group)) or "?"
@@ -244,6 +294,11 @@ function Chords:Rebuild()
     end
     self.pending = false
     unwrapAll()
+    local size = ChordsDB.barSize or 40
+    self.hasFlyout = {}
+    for _, list in pairs(entryFrames) do
+        for _, ef in pairs(list) do ef:Hide() end
+    end
     ClearOverrideBindings(binder)
 
     local blocked = blockList()
@@ -258,7 +313,7 @@ function Chords:Rebuild()
     for g, grp in pairs(ChordsDB.groups) do
         local gf = groupFrame(g)
         local cf = cancelFrame(g)
-        wrap(cf, gf, nil, "owner:ClearBindings()")
+        wrap(cf, gf, nil, CLOSE_CALL)
         gf:SetAttribute("cancel", cf:GetName())
         gf:SetAttribute("bkeys", blocked ~= "" and blocked or nil)
 
@@ -270,24 +325,36 @@ function Chords:Rebuild()
         local n, ne = 0, 0
         for _, k in ipairs(keys) do
             local act = grp.entries[k]
-            local btn
+            local btn, isIcon
             if act.group then
                 if ChordsDB.groups[act.group] then
                     btn = groupFrame(act.group)
                     -- opening a sub-group closes this group's layer first
-                    wrap(btn, gf, "owner:ClearBindings()", nil)
+                    wrap(btn, gf, CLOSE_CALL, nil)
                 end
+                isIcon = false
             else
                 n = n + 1
                 btn = entryFrame(g, n)
                 setAction(btn, act)
-                wrap(btn, gf, nil, "owner:ClearBindings()")
+                wrap(btn, gf, nil, CLOSE_CALL)
+                -- flyout icon, stacked upward from the group button
+                btn:SetSize(size, size)
+                btn:ClearAllPoints()
+                btn:SetPoint("BOTTOM", gf, "TOP", 0, 6 + (n - 1) * (size + 4))
+                btn.icon:SetTexture(actionIcon(act))
+                btn.keyText:SetText(shortKey(k))
+                btn.label = describe(act)
+                self.hasFlyout[g] = true
+                isIcon = true
             end
             if btn then
                 ne = ne + 1
                 lines[#lines + 1] = ("|cff00ff00%s|r  %s"):format(k, describe(act))
                 gf:SetAttribute("ekey" .. ne, k)
                 gf:SetAttribute("ebtn" .. ne, btn:GetName())
+                gf:SetAttribute("eshow" .. ne, isIcon or nil)
+                gf:SetFrameRef("eb" .. ne, btn)
             end
         end
         gf:SetAttribute("ecount", ne)
@@ -309,7 +376,6 @@ function Chords:Rebuild()
 
     -- lay out the on-screen bar
     restoreBarPos()
-    local size = ChordsDB.barSize or 40
     local names = {}
     for g in pairs(ChordsDB.groups) do names[#names + 1] = g end
     table.sort(names)
@@ -325,6 +391,9 @@ function Chords:Rebuild()
             gf:Show()
             x = x + size + 4
         else
+            gf:ClearAllPoints()
+            gf:SetSize(size, size)
+            gf:SetPoint("CENTER", UIParent, "CENTER", 0, -150)
             gf:Hide()
         end
     end
