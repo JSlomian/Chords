@@ -5,6 +5,7 @@
 ## Author: Jan Słomian
 ## X-License: MIT
 ## X-Category: Action Bars
+## X-Curse-Project-ID: 1739779
 ## SavedVariables: ChordsDB
 
 Chords.lua
