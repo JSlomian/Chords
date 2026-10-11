@@ -377,6 +377,8 @@ function Chords:Rebuild()
         end
     end
     bar:SetSize(math.max(x - 4, 10), size)
+
+    self:SyncMacros()
 end
 
 ---------------------------------------------------------------------------
@@ -464,6 +466,10 @@ function Chords.SyncMacro(g, pickup)
     local body = "/click ChordsGroup_" .. g
     local idx = GetMacroIndexByName(name)
     if idx and idx > 0 then
+        local _, _, existing = GetMacroInfo(idx)
+        if existing and not existing:find("^/click ChordsGroup_") then
+            return false, "a macro named '" .. name .. "' already exists"
+        end
         EditMacro(idx, name, icon, body)
     else
         local ok, err = pcall(CreateMacro, name, icon, body, nil)
@@ -471,6 +477,34 @@ function Chords.SyncMacro(g, pickup)
     end
     if pickup then PickupMacro(name) end
     return true
+end
+
+-- Free the macro slot of a group (only if the macro is ours).
+function Chords.RemoveMacro(g)
+    if InCombatLockdown() then return end
+    local idx = GetMacroIndexByName(g:sub(1, 16))
+    if idx and idx > 0 then
+        local _, _, body = GetMacroInfo(idx)
+        if body and body:find("^/click ChordsGroup_") then DeleteMacro(idx) end
+    end
+end
+
+-- "Separate action bar" groups live on the Chords bar and use no macro slot;
+-- every other group gets an account macro to drag onto a normal bar.
+local macroWarned = {}
+function Chords:SyncMacros()
+    if InCombatLockdown() then return end
+    for g, grp in pairs(ChordsDB.groups) do
+        if grp.show then
+            Chords.RemoveMacro(g)
+        else
+            local ok, err = Chords.SyncMacro(g, false)
+            if not ok and not macroWarned[g] then
+                macroWarned[g] = true
+                say(("macro for '%s' not created: %s"):format(g, tostring(err)))
+            end
+        end
+    end
 end
 
 function Chords.RenameGroup(old, new)

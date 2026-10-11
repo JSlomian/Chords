@@ -490,7 +490,7 @@ showCB:SetSize(24, 24)
 showCB:SetPoint("LEFT", nameHint, "RIGHT", 10, 0)
 showCB.text = showCB:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 showCB.text:SetPoint("LEFT", showCB, "RIGHT", 2, 0)
-showCB.text:SetText("On screen")
+showCB.text:SetText("Separate action bar")
 showCB:SetScript("OnClick", function(self)
     if locked() or not selected then self:SetChecked(not self:GetChecked()) return end
     ChordsDB.groups[selected].show = self:GetChecked() and true or nil
@@ -526,7 +526,7 @@ end)
 local macroBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
 macroBtn:SetSize(110, 24)
 macroBtn:SetPoint("LEFT", enterClear, "RIGHT", 10, 0)
-macroBtn:SetText("Make macro")
+macroBtn:SetText("Pick up macro")
 macroBtn:SetScript("OnClick", function()
     if not selected or locked() then return end
     local ok, err = Chords.SyncMacro(selected, true)
@@ -547,6 +547,7 @@ StaticPopupDialogs["CHORDS_DELETE_GROUP"] = {
     button1 = YES, button2 = NO,
     OnAccept = function()
         if locked() then return end
+        Chords.RemoveMacro(selected)
         ChordsDB.groups[selected] = nil
         E.drafts[selected] = nil
         selected = nil
@@ -647,6 +648,7 @@ function E:Refresh()
     end
     gName:SetText(selected)
     showCB:SetChecked(grp.show and true or false)
+    macroBtn:SetEnabled(not grp.show)
     iconBtn.tex:SetTexture(grp.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     enterBtn:SetText(grp.enter or "(none)")
 
