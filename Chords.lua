@@ -53,7 +53,7 @@ local CLOSE_SNIPPET = [[
         end
     end
 ]]
-local CLOSE_CALL = 'owner:RunAttribute("close")'
+local CLOSE_CALL = 'control:RunAttribute("close")'
 
 local GROUP_SNIPPET = [[
     self:RunAttribute("close")
@@ -137,6 +137,9 @@ end
 
 local function wrap(f, header, pre, post)
     -- this client's SecureHandlerWrapScript rejects a nil pre-body, so pass empty strings
+    -- postBody only runs if preBody returns (newbutton, message) with a non-nil message,
+    -- and the snippets see the header as `control`, not `owner`.
+    if post and not pre then pre = 'return nil, "x"' end
     SecureHandlerWrapScript(f, "OnClick", header, pre or "", post or "")
     wrapped[#wrapped + 1] = f
 end
