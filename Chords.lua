@@ -248,6 +248,7 @@ end
 
 local function resetAction(f)
     for _, a in ipairs({ "type", "spell", "item", "macrotext" }) do f:SetAttribute(a, nil) end
+    f:SetAttribute("useOnKeyDown", false)
 end
 
 local function setAction(f, act)
@@ -315,11 +316,17 @@ function Chords:Rebuild()
         local cf = cancelFrame(g)
         wrap(cf, gf, nil, CLOSE_CALL)
         gf:SetAttribute("cancel", cf:GetName())
-        gf:SetAttribute("bkeys", blocked ~= "" and blocked or nil)
-
         local keys = {}
         for k in pairs(grp.entries) do keys[#keys + 1] = k end
         table.sort(keys)
+
+        local mine = {}
+        for _, k in ipairs(keys) do mine[k] = true end
+        local kept = {}
+        for key in blocked:gmatch("%S+") do
+            if not mine[key] then kept[#kept + 1] = key end
+        end
+        gf:SetAttribute("bkeys", #kept > 0 and table.concat(kept, " ") or nil)
 
         local lines = { "|cffffd100" .. g .. "|r" }
         local n, ne = 0, 0
@@ -520,6 +527,23 @@ function Chords.RenameGroup(old, new)
     end
     Chords:Rebuild()
     return true
+end
+
+function handlers.debug()
+    for g, gf in pairs(groupFrames) do
+        if ChordsDB.groups[g] then
+            local bk = gf:GetAttribute("bkeys")
+            say(("%s: entries=%s blocked=%s cancel=%s"):format(g, tostring(gf:GetAttribute("ecount")),
+                bk and select(2, bk:gsub(" ", " ")) + 1 or 0, tostring(gf:GetAttribute("cancel"))))
+            for i = 1, gf:GetAttribute("ecount") or 0 do
+                local b = _G[gf:GetAttribute("ebtn" .. i) or ""]
+                print(("   %s -> %s type=%s spell=%s keydown=%s"):format(tostring(gf:GetAttribute("ekey" .. i)),
+                    tostring(gf:GetAttribute("ebtn" .. i)), tostring(b and b:GetAttribute("type")),
+                    tostring(b and b:GetAttribute("spell")), tostring(b and b:GetAttribute("useOnKeyDown"))))
+            end
+        end
+    end
+    say("ActionButtonUseKeyDown = " .. tostring(GetCVar("ActionButtonUseKeyDown")))
 end
 
 function handlers.reset()
