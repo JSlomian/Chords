@@ -1,14 +1,12 @@
 -- Chords: group keys that open a temporary layer of follow-up keys.
 --
 -- Mechanism: every group is a SecureHandlerClickTemplate button. Clicking it (via a
--- "/click ChordsGroup_<name>" macro on an action bar slot, or a direct "enter" key)
--- runs a restricted snippet that sets priority override bindings:
---   1. every key in the block list -> ChordsNoop (so nothing else fires),
---   2. each entry key -> its own secure action button (spell/item/macro) or sub-group,
---   3. ESCAPE -> cancel.
--- Entry/cancel buttons are wrapped so that after they fire the group's bindings are cleared.
--- Binding changes in combat are only allowed from this secure code, so all frames and
--- attributes are (re)built out of combat only.
+-- "/click ChordsGroup_<name>" macro on an action bar slot, the on-screen bar, or a direct
+-- "enter" key) runs a restricted snippet that sets priority override bindings for the
+-- group's own entry keys only (plus ESCAPE to cancel) and shows the flyout icons.
+-- Nothing else is intercepted. Using an entry, Escape, or pressing the group key again
+-- closes it; a 1.5 s timeout closes it too, but only out of combat (restricted code has
+-- no timers and bindings cannot be changed from insecure code in combat).
 
 local Chords = {}
 _G.Chords = Chords
@@ -45,6 +43,7 @@ local hintFrame
 
 local CLOSE_SNIPPET = [[
     self:ClearBindings()
+    self:SetAttribute("isopen", false)
     local n = self:GetAttribute("ecount") or 0
     for i = 1, n do
         if self:GetAttribute("eshow" .. i) then
@@ -56,21 +55,16 @@ local CLOSE_SNIPPET = [[
 local CLOSE_CALL = 'control:RunAttribute("close")'
 
 local GROUP_SNIPPET = [[
-    self:RunAttribute("close")
-    if (self:GetAttribute("ecount") or 0) == 0 then return end
-    local keys = self:GetAttribute("bkeys")
-    if keys then
-        local t = newtable(strsplit(" ", keys))
-        for i = 1, #t do
-            self:SetBindingClick(true, t[i], "ChordsNoop")
-        end
+    -- pressing the group's own key again closes it
+    if self:GetAttribute("isopen") then
+        self:RunAttribute("close")
+        return
     end
     local n = self:GetAttribute("ecount") or 0
+    if n == 0 then return end
     for i = 1, n do
         self:SetBindingClick(true, self:GetAttribute("ekey" .. i), self:GetAttribute("ebtn" .. i))
     end
-    local toggle = self:GetAttribute("toggle")
-    if toggle then self:SetBindingClick(true, toggle, self:GetAttribute("cancel")) end
     self:SetBindingClick(true, "ESCAPE", self:GetAttribute("cancel"))
     for i = 1, n do
         if self:GetAttribute("eshow" .. i) then
@@ -78,6 +72,7 @@ local GROUP_SNIPPET = [[
             if b then b:Show() end
         end
     end
+    self:SetAttribute("isopen", true)
 ]]
 
 ---------------------------------------------------------------------------
@@ -103,30 +98,6 @@ local function spellKnown(name)
     end
 end
 
-local function blockList()
-    local bases = {}
-    for c = 65, 90 do bases[#bases + 1] = string.char(c) end
-    for d = 0, 9 do bases[#bases + 1] = tostring(d) end
-    for f = 1, 12 do bases[#bases + 1] = "F" .. f end
-    for _, k in ipairs({ "-", "=", "[", "]", ";", "'", ",", ".", "/", "\\", "`", "SPACE", "TAB" }) do
-        bases[#bases + 1] = k
-    end
-    local mods = { "", "SHIFT-", "CTRL-", "SHIFT-CTRL-", "ALT-", "ALT-SHIFT-", "ALT-CTRL-", "ALT-CTRL-SHIFT-" }
-    local pass = {}
-    for _, k in ipairs(ChordsDB.passthrough or {}) do pass[normKey(k)] = true end
-    local out = {}
-    for _, b in ipairs(bases) do
-        if not pass[b] then
-            for _, m in ipairs(mods) do
-                local key = m .. b
-                local action = GetBindingAction(key)
-                if action and action ~= "" then out[#out + 1] = key end
-            end
-        end
-    end
-    return table.concat(out, " ")
-end
-
 local function unwrapAll()
     for _, f in ipairs(wrapped) do
         while true do
@@ -149,6 +120,29 @@ end
 ---------------------------------------------------------------------------
 -- hint popup (insecure, purely cosmetic)
 ---------------------------------------------------------------------------
+
+local TIMEOUT = 1.5
+local openStamp = {}
+
+local function closeGroup(g)
+    local gf = groupFrames[g]
+    if not gf or InCombatLockdown() then return false end
+    ClearOverrideBindings(gf)
+    gf:SetAttribute("isopen", false)
+    for _, ef in pairs(entryFrames[g] or {}) do ef:Hide() end
+    return true
+end
+
+local function armTimeout(g)
+    openStamp[g] = (openStamp[g] or 0) + 1
+    local stamp = openStamp[g]
+    C_Timer.After(TIMEOUT, function()
+        local gf = groupFrames[g]
+        if openStamp[g] == stamp and gf and gf:GetAttribute("isopen") then
+            closeGroup(g) -- in combat this is skipped; it is retried when combat ends
+        end
+    end)
+end
 
 local function hideHint()
     if hintFrame then hintFrame:Hide() end
@@ -191,7 +185,15 @@ local function groupFrame(g)
         f:RegisterForClicks("AnyUp")
         f:SetAttribute("_onclick", GROUP_SNIPPET)
         f:SetAttribute("close", CLOSE_SNIPPET)
-        f:HookScript("OnClick", function() showHint(g) end)
+        f:HookScript("OnClick", function(self)
+            -- runs after the secure snippet, so isopen already reflects the new state
+            if self:GetAttribute("isopen") then
+                showHint(g)
+                armTimeout(g)
+            else
+                openStamp[g] = (openStamp[g] or 0) + 1
+            end
+        end)
         f:Hide()
         f.icon = f:CreateTexture(nil, "BACKGROUND")
         f.icon:SetAllPoints()
@@ -307,8 +309,6 @@ function Chords:Rebuild()
     end
     ClearOverrideBindings(binder)
 
-    local blocked = blockList()
-    self.lastBlocked = blocked
     -- make sure every referenced sub-group has a frame
     for g, grp in pairs(ChordsDB.groups) do
         for _, act in pairs(grp.entries) do
@@ -325,14 +325,8 @@ function Chords:Rebuild()
         for k in pairs(grp.entries) do keys[#keys + 1] = k end
         table.sort(keys)
 
-        local mine = {}
-        for _, k in ipairs(keys) do mine[k] = true end
-        local kept = {}
-        for key in blocked:gmatch("%S+") do
-            if not mine[key] then kept[#kept + 1] = key end
-        end
-        gf:SetAttribute("bkeys", #kept > 0 and table.concat(kept, " ") or nil)
-        gf:SetAttribute("toggle", grp.enter)
+        gf:SetAttribute("bkeys", nil)
+        gf:SetAttribute("toggle", nil)
 
         local lines = { "|cffffd100" .. g .. "|r" }
         local n, ne = 0, 0
@@ -435,7 +429,6 @@ local function help()
     print("  /chords enter <group> <key|none>   -- bind a key directly (or use the macro)")
     print("  /chords bar size <20-80>            -- size of the on-screen buttons")
     print("  /chords macro <group>               -- create a '/click' macro to drag onto a bar")
-    print("  /chords pass <key> [<key>...]       -- keys NOT blocked while a group is open (e.g. W A S D)")
 end
 
 local handlers = {}
@@ -490,14 +483,6 @@ function handlers.enter(args)
     Chords:Rebuild()
 end
 
-function handlers.pass(args)
-    ChordsDB.passthrough = {}
-    for k in args:gmatch("%S+") do table.insert(ChordsDB.passthrough, normKey(k)) end
-    say("pass-through keys: " .. (#ChordsDB.passthrough > 0 and table.concat(ChordsDB.passthrough, " ") or "(none)"))
-    Chords:Rebuild()
-end
-
--- Create or update the "/click" macro that launches a group (name = group name, icon = group icon).
 function Chords.SyncMacro(g, pickup)
     local grp = ChordsDB.groups[g]
     if not grp then return false, "no such group" end
@@ -549,11 +534,6 @@ function handlers.debug()
             end
         end
     end
-    local sample = {}
-    for key in blockList():gmatch("%S+") do
-        if #sample < 12 then sample[#sample + 1] = key end
-    end
-    say("blocked keys (first 12): " .. table.concat(sample, " "))
     say("ActionButtonUseKeyDown = " .. tostring(GetCVar("ActionButtonUseKeyDown")))
 end
 
@@ -602,7 +582,6 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
-ev:RegisterEvent("UPDATE_BINDINGS")
 ev:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == "Chords" then
         ChordsDB = ChordsDB or {}
@@ -610,13 +589,10 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         ChordsDB.passthrough = ChordsDB.passthrough or {}
     elseif event == "PLAYER_LOGIN" then
         Chords:Rebuild()
-    elseif event == "UPDATE_BINDINGS" then
-        if ChordsDB and ChordsDB.groups then
-            C_Timer.After(0.5, function()
-                if blockList() ~= Chords.lastBlocked then Chords:Rebuild() end
-            end)
-        end
     elseif event == "PLAYER_REGEN_ENABLED" then
+        for g, gf in pairs(groupFrames) do
+            if gf:GetAttribute("isopen") then closeGroup(g) end
+        end
         if Chords.pending then Chords:Rebuild() end
     end
 end)
