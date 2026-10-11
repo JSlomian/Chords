@@ -89,16 +89,31 @@ local function buildKey(key)
     return p .. key
 end
 
+local capturing -- the button currently swallowing keyboard input
+
+local function endCapture(btn)
+    btn:EnableKeyboard(false)
+    btn:SetScript("OnKeyDown", nil)
+    btn:SetScript("OnHide", nil)
+    if capturing == btn then capturing = nil end
+end
+
 local function captureKey(btn, onKey)
+    if capturing then endCapture(capturing) end
     local focus = GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()
     if focus then focus:ClearFocus() end
+    capturing = btn
     btn:SetText("press a key...")
     btn:EnableKeyboard(true)
+    btn:SetScript("OnHide", function(self) endCapture(self) end)
+    -- never leave the keyboard captured: give up after 6 seconds
+    C_Timer.After(6, function()
+        if capturing == btn then endCapture(btn) E:Refresh() end
+    end)
     btn:SetScript("OnKeyDown", function(self, key)
         if MODIFIER_KEYS[key] then return end
         self:SetPropagateKeyboardInput(false)
-        self:EnableKeyboard(false)
-        self:SetScript("OnKeyDown", nil)
+        endCapture(self)
         if key ~= "ESCAPE" then onKey(buildKey(key)) end
         E:Refresh()
     end)
@@ -670,7 +685,7 @@ function E:Refresh()
 end
 
 f:SetScript("OnShow", function() E:ScanSpells() E:Refresh() end)
-f:SetScript("OnHide", function() dd:Hide() browser:Hide() picker:Hide() end)
+f:SetScript("OnHide", function() dd:Hide() browser:Hide() picker:Hide() if capturing then endCapture(capturing) end end)
 
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_REGEN_DISABLED")

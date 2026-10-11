@@ -49,7 +49,7 @@ local GROUP_SNIPPET = [[
     if keys then
         local t = newtable(strsplit(" ", keys))
         for i = 1, #t do
-            self:SetBindingClick(true, t[i], "ChordsNoop")
+            self:SetBindingClick(true, t[i], self:GetAttribute("cancel"))
         end
     end
     local n = self:GetAttribute("ecount") or 0
