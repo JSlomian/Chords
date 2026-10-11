@@ -1,0 +1,6 @@
+package-as: Chords
+
+ignore:
+  - README.md
+  - CHANGELOG.md
+  - .gitignore

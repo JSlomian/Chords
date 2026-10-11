@@ -1,8 +1,10 @@
 ## Interface: 16001, 11509
 ## Title: Chords
-## Notes: Vim-style key chords: press a group key, then a follow-up key to cast. Configure with /chords.
-## Version: 0.1.0
+## Notes: Vim-style key chords: press a group key, then a follow-up key to cast. Flyout of spells like the totem bar. Configure with /chords.
+## Version: @project-version@
 ## Author: Jan Słomian
+## X-License: MIT
+## X-Category: Action Bars
 ## SavedVariables: ChordsDB
 
 Chords.lua
