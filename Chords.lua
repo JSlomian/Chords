@@ -45,6 +45,7 @@ local hintFrame
 
 local GROUP_SNIPPET = [[
     self:ClearBindings()
+    if (self:GetAttribute("ecount") or 0) == 0 then return end
     local keys = self:GetAttribute("bkeys")
     if keys then
         local t = newtable(strsplit(" ", keys))
@@ -254,7 +255,7 @@ function Chords:Rebuild()
         local cf = cancelFrame(g)
         wrap(cf, gf, nil, "owner:ClearBindings()")
         gf:SetAttribute("cancel", cf:GetName())
-        gf:SetAttribute("bkeys", blocked)
+        gf:SetAttribute("bkeys", ChordsDB.block and blocked or nil)
 
         local keys = {}
         for k in pairs(grp.entries) do keys[#keys + 1] = k end
@@ -345,6 +346,7 @@ local function help()
     print("  /chords add <group> <key> <spell name | item:Name | macro:/cast ... | group:other>")
     print("  /chords del <group> [key]")
     print("  /chords enter <group> <key|none>   -- bind a key directly (or use the macro)")
+    print("  /chords block on|off               -- block all other keys while a group is open (default off)")
     print("  /chords bar size <20-80>            -- size of the on-screen buttons")
     print("  /chords macro <group>               -- create a '/click' macro to drag onto a bar")
     print("  /chords pass <key> [<key>...]       -- keys NOT blocked while a group is open (e.g. W A S D)")
@@ -445,6 +447,23 @@ function Chords.RenameGroup(old, new)
     end
     Chords:Rebuild()
     return true
+end
+
+function handlers.block(args)
+    local v = args:lower()
+    if v == "on" then ChordsDB.block = true
+    elseif v == "off" then ChordsDB.block = nil
+    else say("block is " .. (ChordsDB.block and "on" or "off") .. ". /chords block on|off") return end
+    say("blocking of other keys while a group is open: " .. (ChordsDB.block and "on" or "off"))
+    Chords:Rebuild()
+end
+
+function handlers.reset()
+    ClearOverrideBindings(binder)
+    for _, gf in pairs(groupFrames) do
+        if not InCombatLockdown() then gf:SetAttribute("ecount", 0) end
+    end
+    say("cleared. /reload to fully restore your bindings.")
 end
 
 function handlers.bar(args)
