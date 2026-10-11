@@ -267,6 +267,106 @@ end
 -- rebuild
 ---------------------------------------------------------------------------
 
+---------------------------------------------------------------------------
+-- flyout anchoring: icons attach to the macro's action bar button (or the Chords bar button)
+---------------------------------------------------------------------------
+
+local BAR_PREFIXES = {
+    "ActionButton", "MultiBarBottomLeftButton", "MultiBarBottomRightButton",
+    "MultiBarRightButton", "MultiBarLeftButton",
+}
+
+local function slotOf(btn)
+    if ActionButton_GetPagedID then
+        local ok, id = pcall(ActionButton_GetPagedID, btn)
+        if ok and type(id) == "number" then return id end
+    end
+    if type(btn.action) == "number" then return btn.action end
+    local a = btn.GetAttribute and btn:GetAttribute("action")
+    return type(a) == "number" and a or nil
+end
+
+local function holdsMacro(btn, name)
+    if not btn:IsVisible() then return false end
+    local slot = slotOf(btn)
+    if not slot or not HasAction(slot) then return false end
+    local kind = GetActionInfo(slot)
+    return kind == "macro" and GetActionText(slot) == name
+end
+
+-- Find the visible action button holding the macro. Blizzard's bars first, then any
+-- other addon's CheckButton that carries an action slot.
+local function findMacroButton(name)
+    for _, prefix in ipairs(BAR_PREFIXES) do
+        for i = 1, 12 do
+            local b = _G[prefix .. i]
+            if b and holdsMacro(b, name) then return b end
+        end
+    end
+    local f = EnumerateFrames()
+    while f do
+        if f.GetObjectType and f:GetObjectType() == "CheckButton" and f.IsVisible
+            and (type(f.action) == "number") and holdsMacro(f, name) then
+            return f
+        end
+        f = EnumerateFrames(f)
+    end
+end
+
+function Chords:AnchorFlyouts()
+    if InCombatLockdown() then
+        self.pendingAnchor = true
+        return
+    end
+    self.pendingAnchor = false
+    local barSize = ChordsDB.barSize or 40
+    for g, grp in pairs(ChordsDB.groups) do
+        local gf = groupFrames[g]
+        if gf then
+            local target, size = gf, barSize
+            if not grp.show then
+                local btn = findMacroButton(g:sub(1, 16))
+                gf:ClearAllPoints()
+                if btn then
+                    local w = math.max(btn:GetWidth(), 28)
+                    gf:SetSize(w, w)
+                    gf:SetPoint("CENTER", btn, "CENTER", 0, 0)
+                    target, size = btn, w
+                else
+                    gf:SetSize(barSize, barSize)
+                    gf:SetPoint("CENTER", UIParent, "CENTER", 0, -150)
+                end
+            end
+            -- open the flyout away from the nearer screen edge
+            local _, cy = target:GetCenter()
+            local down = cy and (cy * target:GetEffectiveScale() > UIParent:GetHeight() * UIParent:GetEffectiveScale() / 2)
+            for i = 1, self.iconCount and self.iconCount[g] or 0 do
+                local ef = entryFrames[g] and entryFrames[g][i]
+                if ef then
+                    local offset = 6 + (i - 1) * (size + 4)
+                    ef:SetSize(size, size)
+                    ef:ClearAllPoints()
+                    if down then
+                        ef:SetPoint("TOP", gf, "BOTTOM", 0, -offset)
+                    else
+                        ef:SetPoint("BOTTOM", gf, "TOP", 0, offset)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local anchorQueued
+function Chords:QueueAnchor()
+    if anchorQueued then return end
+    anchorQueued = true
+    C_Timer.After(0.3, function()
+        anchorQueued = false
+        Chords:AnchorFlyouts()
+    end)
+end
+
 function Chords:Rebuild()
     if InCombatLockdown() then
         self.pending = true
@@ -276,6 +376,7 @@ function Chords:Rebuild()
     unwrapAll()
     local size = ChordsDB.barSize or 40
     self.hasFlyout = {}
+    self.iconCount = {}
     for _, list in pairs(entryFrames) do
         for _, ef in pairs(list) do ef:Hide() end
     end
@@ -317,10 +418,6 @@ function Chords:Rebuild()
                 btn = entryFrame(g, n)
                 setAction(btn, act)
                 wrap(btn, gf, nil, CLOSE_CALL)
-                -- flyout icon, stacked upward from the group button
-                btn:SetSize(size, size)
-                btn:ClearAllPoints()
-                btn:SetPoint("BOTTOM", gf, "TOP", 0, 6 + (n - 1) * (size + 4))
                 btn.icon:SetTexture(actionIcon(act))
                 btn.keyText:SetText(shortKey(k))
                 btn.label = describe(act)
@@ -337,6 +434,7 @@ function Chords:Rebuild()
             end
         end
         gf:SetAttribute("ecount", ne)
+        self.iconCount[g] = n
         hints[g] = table.concat(lines, "\n")
 
         if grp.enter then
@@ -379,6 +477,7 @@ function Chords:Rebuild()
     bar:SetSize(math.max(x - 4, 10), size)
 
     self:SyncMacros()
+    self:AnchorFlyouts()
 end
 
 ---------------------------------------------------------------------------
@@ -588,6 +687,9 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
+for _, e in ipairs({ "ACTIONBAR_SLOT_CHANGED", "ACTIONBAR_PAGE_CHANGED", "UPDATE_BONUS_ACTIONBAR", "PLAYER_ENTERING_WORLD" }) do
+    ev:RegisterEvent(e)
+end
 ev:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == "Chords" then
         ChordsDB = ChordsDB or {}
@@ -595,7 +697,11 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         ChordsDB.passthrough = ChordsDB.passthrough or {}
     elseif event == "PLAYER_LOGIN" then
         Chords:Rebuild()
+    elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "ACTIONBAR_PAGE_CHANGED"
+        or event == "UPDATE_BONUS_ACTIONBAR" or event == "PLAYER_ENTERING_WORLD" then
+        if ChordsDB and ChordsDB.groups then Chords:QueueAnchor() end
     elseif event == "PLAYER_REGEN_ENABLED" then
+        if Chords.pendingAnchor then Chords:QueueAnchor() end
         if Chords.pending then Chords:Rebuild() end
     end
 end)
