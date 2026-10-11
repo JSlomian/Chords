@@ -5,8 +5,8 @@
 -- "enter" key) runs a restricted snippet that sets priority override bindings for the
 -- group's own entry keys only (plus ESCAPE to cancel) and shows the flyout icons.
 -- Nothing else is intercepted. Using an entry, Escape, or pressing the group key again
--- closes it; a 1.5 s timeout closes it too, but only out of combat (restricted code has
--- no timers and bindings cannot be changed from insecure code in combat).
+-- closes it. There is no timeout: closing means changing bindings, which only secure code
+-- may do in combat, and secure code has no timers.
 
 local Chords = {}
 _G.Chords = Chords
@@ -121,29 +121,6 @@ end
 -- hint popup (insecure, purely cosmetic)
 ---------------------------------------------------------------------------
 
-local TIMEOUT = 1.5
-local openStamp = {}
-
-local function closeGroup(g)
-    local gf = groupFrames[g]
-    if not gf or InCombatLockdown() then return false end
-    ClearOverrideBindings(gf)
-    gf:SetAttribute("isopen", false)
-    for _, ef in pairs(entryFrames[g] or {}) do ef:Hide() end
-    return true
-end
-
-local function armTimeout(g)
-    openStamp[g] = (openStamp[g] or 0) + 1
-    local stamp = openStamp[g]
-    C_Timer.After(TIMEOUT, function()
-        local gf = groupFrames[g]
-        if openStamp[g] == stamp and gf and gf:GetAttribute("isopen") then
-            closeGroup(g) -- in combat this is skipped; it is retried when combat ends
-        end
-    end)
-end
-
 local function hideHint()
     if hintFrame then hintFrame:Hide() end
 end
@@ -187,12 +164,7 @@ local function groupFrame(g)
         f:SetAttribute("close", CLOSE_SNIPPET)
         f:HookScript("OnClick", function(self)
             -- runs after the secure snippet, so isopen already reflects the new state
-            if self:GetAttribute("isopen") then
-                showHint(g)
-                armTimeout(g)
-            else
-                openStamp[g] = (openStamp[g] or 0) + 1
-            end
+            if self:GetAttribute("isopen") then showHint(g) else hideHint() end
         end)
         f:Hide()
         f.icon = f:CreateTexture(nil, "BACKGROUND")
@@ -590,9 +562,6 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_LOGIN" then
         Chords:Rebuild()
     elseif event == "PLAYER_REGEN_ENABLED" then
-        for g, gf in pairs(groupFrames) do
-            if gf:GetAttribute("isopen") then closeGroup(g) end
-        end
         if Chords.pending then Chords:Rebuild() end
     end
 end)
