@@ -62,13 +62,15 @@ local GROUP_SNIPPET = [[
     if keys then
         local t = newtable(strsplit(" ", keys))
         for i = 1, #t do
-            self:SetBindingClick(true, t[i], self:GetAttribute("cancel"))
+            self:SetBindingClick(true, t[i], "ChordsNoop")
         end
     end
     local n = self:GetAttribute("ecount") or 0
     for i = 1, n do
         self:SetBindingClick(true, self:GetAttribute("ekey" .. i), self:GetAttribute("ebtn" .. i))
     end
+    local toggle = self:GetAttribute("toggle")
+    if toggle then self:SetBindingClick(true, toggle, self:GetAttribute("cancel")) end
     self:SetBindingClick(true, "ESCAPE", self:GetAttribute("cancel"))
     for i = 1, n do
         if self:GetAttribute("eshow" .. i) then
@@ -330,6 +332,7 @@ function Chords:Rebuild()
             if not mine[key] then kept[#kept + 1] = key end
         end
         gf:SetAttribute("bkeys", #kept > 0 and table.concat(kept, " ") or nil)
+        gf:SetAttribute("toggle", grp.enter)
 
         local lines = { "|cffffd100" .. g .. "|r" }
         local n, ne = 0, 0
@@ -546,6 +549,11 @@ function handlers.debug()
             end
         end
     end
+    local sample = {}
+    for key in blockList():gmatch("%S+") do
+        if #sample < 12 then sample[#sample + 1] = key end
+    end
+    say("blocked keys (first 12): " .. table.concat(sample, " "))
     say("ActionButtonUseKeyDown = " .. tostring(GetCVar("ActionButtonUseKeyDown")))
 end
 
