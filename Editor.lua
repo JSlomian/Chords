@@ -5,6 +5,7 @@
 local Chords = _G.Chords
 local E = { drafts = {}, spells = {} }
 local selected
+local picker -- icon picker frame, created below
 local ROW_H = 30
 local rows, groupBtns = {}, {}
 
@@ -173,6 +174,7 @@ bSearch:SetScript("OnEscapePressed", bSearch.ClearFocus)
 
 local function openBrowser(r)
     E:ScanSpells()
+    if picker then picker:Hide() end
     browser.target = r
     bSearch:SetText("")
     refreshBrowser()
@@ -241,7 +243,7 @@ end
 ---------------------------------------------------------------------------
 
 local scroll = CreateFrame("ScrollFrame", "ChordsEntryScroll", f, "UIPanelScrollFrameTemplate")
-scroll:SetPoint("TOPLEFT", 200, -112)
+scroll:SetPoint("TOPLEFT", 200, -128)
 scroll:SetPoint("BOTTOMRIGHT", -38, 56)
 local content = CreateFrame("Frame", nil, scroll)
 content:SetSize(400, 10)
@@ -359,6 +361,81 @@ local function makeRow(i)
 end
 
 ---------------------------------------------------------------------------
+-- icon picker (spellbook icons first, then the client's macro icons; paged)
+---------------------------------------------------------------------------
+
+local PAGE, COLS = 48, 8
+picker = CreateFrame("Frame", "ChordsIconPicker", f, "BackdropTemplate")
+picker:SetSize(8 * 38 + 44, 6 * 38 + 110)
+picker:SetPoint("TOPLEFT", f, "TOPRIGHT", -6, 0)
+picker:SetBackdrop(BACKDROP)
+picker:SetFrameStrata("DIALOG")
+picker:Hide()
+picker.page, picker.icons = 1, {}
+local pTitle = picker:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+pTitle:SetPoint("TOP", 0, -18)
+pTitle:SetText("Pick an icon")
+local pPage = picker:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+pPage:SetPoint("BOTTOM", 0, 22)
+local pBtns = {}
+
+local function refreshPicker()
+    local total = #picker.icons
+    local pages = math.max(1, math.ceil(total / PAGE))
+    picker.page = math.min(math.max(picker.page, 1), pages)
+    pPage:SetText(("page %d / %d"):format(picker.page, pages))
+    for i = 1, PAGE do
+        local b = pBtns[i]
+        if not b then
+            b = CreateFrame("Button", nil, picker)
+            b:SetSize(36, 36)
+            b:SetPoint("TOPLEFT", 22 + ((i - 1) % COLS) * 38, -46 - math.floor((i - 1) / COLS) * 38)
+            b.tex = b:CreateTexture(nil, "ARTWORK")
+            b.tex:SetAllPoints()
+            b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+            b:SetScript("OnClick", function(self)
+                if locked() or not selected then return end
+                ChordsDB.groups[selected].icon = self.icon
+                local idx = GetMacroIndexByName(selected:sub(1, 16))
+                if idx and idx > 0 then Chords.SyncMacro(selected, false) end
+                picker:Hide()
+                E:Refresh()
+            end)
+            pBtns[i] = b
+        end
+        local icon = picker.icons[(picker.page - 1) * PAGE + i]
+        if icon then b.icon = icon; b.tex:SetTexture(icon); b:Show() else b:Hide() end
+    end
+end
+
+local prev = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate")
+prev:SetSize(60, 22); prev:SetPoint("BOTTOMLEFT", 24, 18); prev:SetText("Prev")
+prev:SetScript("OnClick", function() picker.page = picker.page - 1 refreshPicker() end)
+local nxt = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate")
+nxt:SetSize(60, 22); nxt:SetPoint("BOTTOMRIGHT", -24, 18); nxt:SetText("Next")
+nxt:SetScript("OnClick", function() picker.page = picker.page + 1 refreshPicker() end)
+
+function E:OpenIconPicker()
+    if not selected then return end
+    self:ScanSpells()
+    browser:Hide()
+    local icons, seen = {}, {}
+    for _, sp in ipairs(self.spells) do
+        if sp.icon and not seen[sp.icon] then seen[sp.icon] = true; icons[#icons + 1] = sp.icon end
+    end
+    for _, getter in ipairs({ GetMacroIcons, GetMacroItemIcons }) do
+        local t = {}
+        pcall(getter, t)
+        for _, ic in ipairs(t) do
+            if not seen[ic] then seen[ic] = true; icons[#icons + 1] = ic end
+        end
+    end
+    picker.icons, picker.page = icons, 1
+    refreshPicker()
+    picker:Show()
+end
+
+---------------------------------------------------------------------------
 -- header (selected group)
 ---------------------------------------------------------------------------
 
@@ -366,11 +443,35 @@ local noGroup = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
 noGroup:SetPoint("CENTER", f, "CENTER", 80, 0)
 noGroup:SetText("Create or select a group on the left")
 
-local gName = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-gName:SetPoint("TOPLEFT", 200, -48)
+local iconBtn = CreateFrame("Button", nil, f)
+iconBtn:SetSize(40, 40)
+iconBtn:SetPoint("TOPLEFT", 204, -42)
+iconBtn.tex = iconBtn:CreateTexture(nil, "ARTWORK")
+iconBtn.tex:SetAllPoints()
+iconBtn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+iconBtn:SetScript("OnClick", function() E:OpenIconPicker() end)
+
+local gName = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+gName:SetSize(150, 22)
+gName:SetPoint("TOPLEFT", 256, -52)
+gName:SetAutoFocus(false)
+gName:SetMaxLetters(16)
+local function renameFromBox(self)
+    if selected and not locked() then
+        if Chords.RenameGroup(selected, self:GetText()) then selected = Chords.normGroup(self:GetText()) end
+    end
+    E:Refresh()
+end
+gName:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+gName:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+gName:SetScript("OnEditFocusLost", renameFromBox)
+
+local nameHint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+nameHint:SetPoint("LEFT", gName, "RIGHT", 8, 0)
+nameHint:SetText("macro name")
 
 local enterLabel = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-enterLabel:SetPoint("TOPLEFT", 200, -78)
+enterLabel:SetPoint("TOPLEFT", 200, -94)
 enterLabel:SetText("Open with key:")
 
 local enterBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
@@ -398,9 +499,15 @@ end)
 local macroBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
 macroBtn:SetSize(110, 24)
 macroBtn:SetPoint("LEFT", enterClear, "RIGHT", 10, 0)
-macroBtn:SetText("Create macro")
+macroBtn:SetText("Make macro")
 macroBtn:SetScript("OnClick", function()
-    if selected then SlashCmdList.CHORDS("macro " .. selected) end
+    if not selected or locked() then return end
+    local ok, err = Chords.SyncMacro(selected, true)
+    if ok then
+        print("|cff66ccffChords|r: macro '" .. selected:sub(1, 16) .. "' is on your cursor, click an action bar slot to place it")
+    else
+        print("|cff66ccffChords|r: |cffff5555macro failed:|r " .. err)
+    end
 end)
 
 local delGroup = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
@@ -504,7 +611,7 @@ function E:Refresh()
     -- header
     local grp = selected and ChordsDB.groups[selected]
     noGroup:SetShown(not grp)
-    for _, w in ipairs({ gName, enterLabel, enterBtn, enterClear, macroBtn, delGroup, addEntry, scroll }) do
+    for _, w in ipairs({ iconBtn, gName, nameHint, enterLabel, enterBtn, enterClear, macroBtn, delGroup, addEntry, scroll }) do
         w:SetShown(grp ~= nil)
     end
     if not grp then
@@ -512,6 +619,7 @@ function E:Refresh()
         return
     end
     gName:SetText(selected)
+    iconBtn.tex:SetTexture(grp.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     enterBtn:SetText(grp.enter or "(none)")
 
     -- entries
@@ -549,7 +657,7 @@ function E:Refresh()
 end
 
 f:SetScript("OnShow", function() E:ScanSpells() E:Refresh() end)
-f:SetScript("OnHide", function() dd:Hide() browser:Hide() end)
+f:SetScript("OnHide", function() dd:Hide() browser:Hide() picker:Hide() end)
 
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_REGEN_DISABLED")

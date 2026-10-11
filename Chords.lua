@@ -345,20 +345,52 @@ function handlers.pass(args)
     Chords:Rebuild()
 end
 
-function handlers.macro(args)
-    local g = normGroup(args or "")
-    if not ChordsDB.groups[g] then say("no such group") return end
-    if InCombatLockdown() then say("not in combat") return end
-    local name = "C_" .. g:sub(1, 14)
+-- Create or update the "/click" macro that launches a group (name = group name, icon = group icon).
+function Chords.SyncMacro(g, pickup)
+    local grp = ChordsDB.groups[g]
+    if not grp then return false, "no such group" end
+    if InCombatLockdown() then return false, "not in combat" end
+    local name = g:sub(1, 16)
+    local icon = grp.icon or "INV_Misc_QuestionMark"
     local body = "/click ChordsGroup_" .. g
     local idx = GetMacroIndexByName(name)
     if idx and idx > 0 then
-        EditMacro(idx, name, "INV_Misc_QuestionMark", body)
+        EditMacro(idx, name, icon, body)
     else
-        local ok, err = pcall(CreateMacro, name, "INV_Misc_QuestionMark", body, nil)
-        if not ok then say("|cffff5555could not create macro:|r " .. tostring(err)) return end
+        local ok, err = pcall(CreateMacro, name, icon, body, nil)
+        if not ok then return false, tostring(err) end
     end
-    say(("macro '%s' ready (open /macro, drag it onto the slot that has your key)."):format(name))
+    if pickup then PickupMacro(name) end
+    return true
+end
+
+function Chords.RenameGroup(old, new)
+    new = normGroup(new)
+    if new == "" or new == old or not ChordsDB.groups[old] then return false end
+    if ChordsDB.groups[new] then say("a group named '" .. new .. "' already exists") return false end
+    if InCombatLockdown() then say("not in combat") return false end
+    local idx = GetMacroIndexByName(old:sub(1, 16))
+    ChordsDB.groups[new], ChordsDB.groups[old] = ChordsDB.groups[old], nil
+    for _, grp in pairs(ChordsDB.groups) do
+        for _, act in pairs(grp.entries) do
+            if act.group == old then act.group = new end
+        end
+    end
+    if idx and idx > 0 then
+        EditMacro(idx, new:sub(1, 16), ChordsDB.groups[new].icon or "INV_Misc_QuestionMark", "/click ChordsGroup_" .. new)
+    end
+    Chords:Rebuild()
+    return true
+end
+
+function handlers.macro(args)
+    local g = normGroup(args or "")
+    local ok, err = Chords.SyncMacro(g, false)
+    if ok then
+        say(("macro '%s' ready (open /macro, drag it onto the slot that has your key)."):format(g:sub(1, 16)))
+    else
+        say("|cffff5555macro failed:|r " .. err)
+    end
 end
 
 SLASH_CHORDS1 = "/chords"
