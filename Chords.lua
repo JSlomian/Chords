@@ -5,7 +5,7 @@
 -- "enter" key) runs a restricted snippet that sets priority override bindings for the
 -- group's own entry keys only (plus ESCAPE to cancel) and shows the flyout icons.
 -- Nothing else is intercepted. Using an entry, Escape, or pressing the group key again
--- closes it. There is no timeout: closing means changing bindings, which only secure code
+-- closes it. Only one group is open at a time: opening one closes any other. There is no timeout: closing means changing bindings, which only secure code
 -- may do in combat, and secure code has no timers.
 
 local Chords = {}
@@ -62,6 +62,11 @@ local GROUP_SNIPPET = [[
     end
     local n = self:GetAttribute("ecount") or 0
     if n == 0 then return end
+    -- only one chord may be open at a time (groups can share keys): close the others
+    for i = 1, (self:GetAttribute("ocount") or 0) do
+        local o = self:GetFrameRef("og" .. i)
+        if o and o:GetAttribute("isopen") then o:RunAttribute("close") end
+    end
     for i = 1, n do
         self:SetBindingClick(true, self:GetAttribute("ekey" .. i), self:GetAttribute("ebtn" .. i))
     end
@@ -155,6 +160,36 @@ end
 local noop = CreateFrame("Button", "ChordsNoop", UIParent, "SecureActionButtonTemplate")
 noop:RegisterForClicks("AnyUp")
 
+-- Skinning: Masque if installed (any Masque skin applies); otherwise match EllesmereUI's
+-- square-icon look (cropped icon + 1px pixel-perfect border) when it is present.
+local masqueGroups = {}
+local function masqueAdd(f, groupName)
+    local Masque = LibStub and LibStub("Masque", true)
+    if not Masque then return false end
+    local grp = masqueGroups[groupName]
+    if not grp then
+        grp = Masque:Group("Chords", groupName)
+        masqueGroups[groupName] = grp
+    end
+    local ok = pcall(grp.AddButton, grp, f, {
+        Icon = f.icon,
+        HotKey = f.keyText,
+        Highlight = f:GetHighlightTexture(),
+    })
+    return ok
+end
+
+local function skinButton(f, groupName)
+    if f.chordsSkinned then return end
+    f.chordsSkinned = true
+    if masqueAdd(f, groupName or "Bar") then return end
+    local EUI = _G.EllesmereUI
+    local PP = EUI and EUI.PP
+    if not (PP and PP.CreateBorder) then return end
+    f.icon:SetTexCoord(0.055, 0.945, 0.055, 0.945)
+    pcall(PP.CreateBorder, f, 0, 0, 0, 1, 1)
+end
+
 local function groupFrame(g)
     local f = groupFrames[g]
     if not f then
@@ -172,6 +207,7 @@ local function groupFrame(g)
         f.keyText = f:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
         f.keyText:SetPoint("TOPRIGHT", -2, -3)
         f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+        skinButton(f, "Bar")
         f:RegisterForDrag("LeftButton")
         f:HookScript("OnDragStart", function()
             if IsShiftKeyDown() and not InCombatLockdown() then bar:StartMoving() end
@@ -214,9 +250,24 @@ local function entryFrame(g, i)
         f.keyText = f:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
         f.keyText:SetPoint("TOPRIGHT", -2, -3)
         f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+        skinButton(f, "Flyout")
         f:HookScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetText(self.label or "")
+            local act, shown = self.act, false
+            if act and act.spell then
+                local id
+                if C_Spell and C_Spell.GetSpellInfo then
+                    local info = C_Spell.GetSpellInfo(act.spell)
+                    id = info and info.spellID
+                elseif GetSpellInfo then
+                    id = select(7, GetSpellInfo(act.spell))
+                end
+                if id then shown = pcall(GameTooltip.SetSpellByID, GameTooltip, id) end
+            elseif act and act.item then
+                local _, link = GetItemInfo(act.item)
+                if link then shown = pcall(GameTooltip.SetHyperlink, GameTooltip, link) end
+            end
+            if not shown then GameTooltip:SetText(self.label or "") end
             GameTooltip:Show()
         end)
         f:HookScript("OnLeave", function() GameTooltip:Hide() end)
@@ -389,6 +440,8 @@ function Chords:Rebuild()
         end
     end
 
+    for g in pairs(ChordsDB.groups) do groupFrame(g) end
+
     for g, grp in pairs(ChordsDB.groups) do
         local gf = groupFrame(g)
         local cf = cancelFrame(g)
@@ -400,6 +453,16 @@ function Chords:Rebuild()
 
         gf:SetAttribute("bkeys", nil)
         gf:SetAttribute("toggle", nil)
+
+        -- refs to every other group so opening this one can close them
+        local oc = 0
+        for og in pairs(groupFrames) do
+            if og ~= g and ChordsDB.groups[og] then
+                oc = oc + 1
+                gf:SetFrameRef("og" .. oc, groupFrames[og])
+            end
+        end
+        gf:SetAttribute("ocount", oc)
 
         local lines = { "|cffffd100" .. g .. "|r" }
         local n, ne = 0, 0
@@ -421,6 +484,7 @@ function Chords:Rebuild()
                 btn.icon:SetTexture(actionIcon(act))
                 btn.keyText:SetText(shortKey(k))
                 btn.label = describe(act)
+                btn.act = act
                 self.hasFlyout[g] = true
                 isIcon = true
             end
@@ -578,6 +642,25 @@ function Chords.SyncMacro(g, pickup)
     return true
 end
 
+-- The user may change a macro's icon in the default macro UI; adopt it into the
+-- group so the next SyncMacro doesn't revert it. Returns true if anything changed.
+function Chords.AdoptMacroIcons()
+    local changed = false
+    for g, grp in pairs(ChordsDB.groups) do
+        if not grp.show then
+            local idx = GetMacroIndexByName(g:sub(1, 16))
+            if idx and idx > 0 then
+                local _, icon, body = GetMacroInfo(idx)
+                if icon and body and body:find("^/click ChordsGroup_") and icon ~= grp.icon then
+                    grp.icon = icon
+                    changed = true
+                end
+            end
+        end
+    end
+    return changed
+end
+
 -- Free the macro slot of a group (only if the macro is ours).
 function Chords.RemoveMacro(g)
     if InCombatLockdown() then return end
@@ -593,6 +676,7 @@ end
 local macroWarned = {}
 function Chords:SyncMacros()
     if InCombatLockdown() then return end
+    Chords.AdoptMacroIcons()
     for g, grp in pairs(ChordsDB.groups) do
         if grp.show then
             Chords.RemoveMacro(g)
@@ -687,6 +771,7 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
+ev:RegisterEvent("UPDATE_MACROS")
 for _, e in ipairs({ "ACTIONBAR_SLOT_CHANGED", "ACTIONBAR_PAGE_CHANGED", "UPDATE_BONUS_ACTIONBAR", "PLAYER_ENTERING_WORLD" }) do
     ev:RegisterEvent(e)
 end
@@ -700,6 +785,11 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "ACTIONBAR_PAGE_CHANGED"
         or event == "UPDATE_BONUS_ACTIONBAR" or event == "PLAYER_ENTERING_WORLD" then
         if ChordsDB and ChordsDB.groups then Chords:QueueAnchor() end
+    elseif event == "UPDATE_MACROS" then
+        if ChordsDB and ChordsDB.groups and Chords.AdoptMacroIcons() then
+            if Chords.Editor and Chords.Editor.Refresh then Chords.Editor:Refresh() end
+            Chords:QueueAnchor()
+        end
     elseif event == "PLAYER_REGEN_ENABLED" then
         if Chords.pendingAnchor then Chords:QueueAnchor() end
         if Chords.pending then Chords:Rebuild() end

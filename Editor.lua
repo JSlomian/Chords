@@ -4,6 +4,7 @@
 
 local Chords = _G.Chords
 local E = { drafts = {}, spells = {} }
+Chords.Editor = E
 local selected
 local picker -- icon picker frame, created below
 local ROW_H = 30
