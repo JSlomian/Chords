@@ -364,6 +364,21 @@ local function findMacroButton(name)
     end
 end
 
+local trackedBtns, trackedSize, hookedBtns = {}, {}, {}
+
+-- Other addons (EllesmereUI etc.) resize/rescale buttons without firing any event we
+-- listen to, and scale changes don't fire OnSizeChanged. Poll the tracked buttons cheaply.
+C_Timer.NewTicker(0.5, function()
+    if InCombatLockdown() then return end
+    for g, btn in pairs(trackedBtns) do
+        local w = math.max(btn:GetWidth() * btn:GetEffectiveScale() / UIParent:GetEffectiveScale(), 28)
+        if math.abs(w - (trackedSize[g] or 0)) > 0.5 then
+            Chords:QueueAnchor()
+            return
+        end
+    end
+end)
+
 function Chords:AnchorFlyouts()
     if InCombatLockdown() then
         self.pendingAnchor = true
@@ -379,7 +394,15 @@ function Chords:AnchorFlyouts()
                 local btn = findMacroButton(g:sub(1, 16))
                 gf:ClearAllPoints()
                 if btn then
-                    local w = math.max(btn:GetWidth(), 28)
+                    -- convert to UIParent units: the bar may be scaled differently
+                    local scale = btn:GetEffectiveScale() / UIParent:GetEffectiveScale()
+                    local w = math.max(btn:GetWidth() * scale, 28)
+                    trackedBtns[g] = btn
+                    trackedSize[g] = w
+                    if not hookedBtns[btn] then
+                        hookedBtns[btn] = true
+                        btn:HookScript("OnSizeChanged", function() Chords:QueueAnchor() end)
+                    end
                     gf:SetSize(w, w)
                     gf:SetPoint("CENTER", btn, "CENTER", 0, 0)
                     target, size = btn, w
@@ -772,7 +795,7 @@ ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("UPDATE_MACROS")
-for _, e in ipairs({ "ACTIONBAR_SLOT_CHANGED", "ACTIONBAR_PAGE_CHANGED", "UPDATE_BONUS_ACTIONBAR", "PLAYER_ENTERING_WORLD" }) do
+for _, e in ipairs({ "ACTIONBAR_SLOT_CHANGED", "ACTIONBAR_PAGE_CHANGED", "UPDATE_BONUS_ACTIONBAR", "PLAYER_ENTERING_WORLD", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED" }) do
     ev:RegisterEvent(e)
 end
 ev:SetScript("OnEvent", function(_, event, arg1)
@@ -783,7 +806,8 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_LOGIN" then
         Chords:Rebuild()
     elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "ACTIONBAR_PAGE_CHANGED"
-        or event == "UPDATE_BONUS_ACTIONBAR" or event == "PLAYER_ENTERING_WORLD" then
+        or event == "UPDATE_BONUS_ACTIONBAR" or event == "PLAYER_ENTERING_WORLD"
+        or event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
         if ChordsDB and ChordsDB.groups then Chords:QueueAnchor() end
     elseif event == "UPDATE_MACROS" then
         if ChordsDB and ChordsDB.groups and Chords.AdoptMacroIcons() then
