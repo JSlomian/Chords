@@ -54,6 +54,7 @@ local CLOSE_SNIPPET = [[
 ]]
 local CLOSE_CALL = 'control:RunAttribute("close")'
 
+
 local GROUP_SNIPPET = [[
     -- pressing the group's own key again closes it
     if self:GetAttribute("isopen") then
@@ -101,6 +102,29 @@ local function spellKnown(name)
         local n, _, icon = GetSpellInfo(name)
         return n, icon
     end
+end
+
+-- Rank that `str` will cast: returns rankNumber (or nil if unranked/unknown)
+-- and whether the string asks for an explicit rank ("Name(Rank N)").
+-- A bare name resolves to the highest known rank.
+local function spellRank(str)
+    if not str then return end
+    local id
+    if C_Spell and C_Spell.GetSpellInfo then
+        local info = C_Spell.GetSpellInfo(str)
+        id = info and info.spellID
+    elseif GetSpellInfo then
+        id = select(7, GetSpellInfo(str))
+    end
+    if not id then return end
+    local sub
+    if C_Spell and C_Spell.GetSpellSubtext then
+        sub = C_Spell.GetSpellSubtext(id)
+    elseif GetSpellSubtext then
+        sub = GetSpellSubtext(id)
+    end
+    local n = sub and tonumber(sub:match("(%d+)"))
+    return n, str:find("%(%s*[Rr]ank") ~= nil
 end
 
 local function unwrapAll()
@@ -249,6 +273,11 @@ local function entryFrame(g, i)
         f.icon:SetAllPoints()
         f.keyText = f:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
         f.keyText:SetPoint("TOPRIGHT", -2, -3)
+        f.cooldown = CreateFrame("Cooldown", nil, f, "CooldownFrameTemplate")
+        f.cooldown:SetAllPoints()
+        f.cooldown:SetDrawEdge(false)
+        f.rankText = f:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+        f.rankText:SetPoint("BOTTOMRIGHT", -2, 2)
         f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
         skinButton(f, "Flyout")
         f:HookScript("OnEnter", function(self)
@@ -263,6 +292,14 @@ local function entryFrame(g, i)
                     id = select(7, GetSpellInfo(act.spell))
                 end
                 if id then shown = pcall(GameTooltip.SetSpellByID, GameTooltip, id) end
+                -- match the spellbook tooltip: gray "Rank N" on the right of the title line
+                local rank = spellRank(act.spell)
+                local right = GameTooltipTextRight1
+                if shown and rank and right and (right:GetText() or "") == "" then
+                    right:SetText(("Rank %d"):format(rank))
+                    right:SetTextColor(0.5, 0.5, 0.5)
+                    right:Show()
+                end
             elseif act and act.item then
                 local _, link = GetItemInfo(act.item)
                 if link then shown = pcall(GameTooltip.SetHyperlink, GameTooltip, link) end
@@ -289,6 +326,17 @@ local function setAction(f, act)
         f:SetAttribute("type", "item"); f:SetAttribute("item", act.item)
     elseif act.macro then
         f:SetAttribute("type", "macro"); f:SetAttribute("macrotext", act.macro)
+    end
+end
+
+local function setRankText(btn, act)
+    local rank, explicit
+    if act and act.spell then rank, explicit = spellRank(act.spell) end
+    if rank then
+        btn.rankText:SetText(rank)
+        if explicit then btn.rankText:SetTextColor(1, 0.82, 0) else btn.rankText:SetTextColor(1, 1, 1) end
+    else
+        btn.rankText:SetText("")
     end
 end
 
@@ -503,9 +551,12 @@ function Chords:Rebuild()
                 n = n + 1
                 btn = entryFrame(g, n)
                 setAction(btn, act)
-                wrap(btn, gf, nil, CLOSE_CALL)
+                -- refuse the click (chord stays open) while the action is on cooldown / GCD
+                -- "stay open" groups don't close on cast, so a press that fails (GCD) costs nothing
+                wrap(btn, gf, nil, (not grp.stay) and CLOSE_CALL or nil)
                 btn.icon:SetTexture(actionIcon(act))
                 btn.keyText:SetText(shortKey(k))
+                setRankText(btn, act)
                 btn.label = describe(act)
                 btn.act = act
                 self.hasFlyout[g] = true
@@ -528,6 +579,8 @@ function Chords:Rebuild()
             SetOverrideBindingClick(binder, true, grp.enter, gf:GetName(), "LeftButton")
         end
     end
+
+    self:UpdateCooldowns()
 
     -- stale groups: neutralise so a leftover macro does nothing
     for g, gf in pairs(groupFrames) do
@@ -596,6 +649,66 @@ local handlers = {}
 -- shared with Editor.lua
 Chords.normKey, Chords.normGroup, Chords.parseAction = normKey, normGroup, parseAction
 Chords.spellKnown, Chords.describe = spellKnown, describe
+Chords.spellRank = spellRank
+
+-- this client returns "secret" numbers for some values in combat; they can't be compared
+local function isSecret(v)
+    return issecretvalue ~= nil and issecretvalue(v) or false
+end
+
+-- cooldown (start, duration) of an action; includes the GCD like an action bar button does
+local function actionCooldown(act)
+    if act.spell then
+        if C_Spell and C_Spell.GetSpellCooldown then
+            local c = C_Spell.GetSpellCooldown(act.spell)
+            if c then return c.startTime, c.duration end
+        elseif GetSpellCooldown then
+            local s, d = GetSpellCooldown(act.spell)
+            return s, d
+        end
+    elseif act.item then
+        local id = GetItemInfoInstant and GetItemInfoInstant(act.item)
+        local fn = (C_Container and C_Container.GetItemCooldown) or GetItemCooldown
+        if id and fn then
+            local s, d = fn(id)
+            return s, d
+        end
+    end
+end
+
+-- Draw cooldown swipes (display only; the game can't be told to refuse a secure click)
+function Chords:UpdateCooldowns()
+    for _, list in pairs(entryFrames) do
+        for _, btn in pairs(list) do
+            if btn.act then
+                local s, d = actionCooldown(btn.act)
+                if isSecret(s) or isSecret(d) then
+                    -- combat: values are opaque (can't compare)
+                    local drawn = false
+                    local cd = btn.cooldown
+                    if cd.SetCooldownFromDurationObject and C_Spell and C_Spell.GetSpellCooldownDuration
+                        and btn.act.spell then
+                        local info = C_Spell.GetSpellInfo(btn.act.spell)
+                        local obj = info and C_Spell.GetSpellCooldownDuration(info.spellID)
+                        if obj then drawn = pcall(cd.SetCooldownFromDurationObject, cd, obj) end
+                    end
+                    if not drawn then pcall(cd.SetCooldown, cd, s, d) end
+                elseif s and d and s > 0 and d > 0 then
+                    btn.cooldown:SetCooldown(s, d)
+                else
+                    btn.cooldown:SetCooldown(0, 0)
+                end
+            end
+        end
+    end
+end
+
+-- labels only (not secure state), so safe to refresh in combat
+function Chords:RefreshRanks()
+    for _, list in pairs(entryFrames) do
+        for _, btn in pairs(list) do setRankText(btn, btn.act) end
+    end
+end
 
 function handlers.list()
     if not next(ChordsDB.groups) then say("no groups yet. /chords add fire 1 Searing Totem") return end
@@ -795,6 +908,9 @@ ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("UPDATE_MACROS")
+ev:RegisterEvent("SPELLS_CHANGED")
+ev:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+ev:RegisterEvent("BAG_UPDATE_COOLDOWN")
 for _, e in ipairs({ "ACTIONBAR_SLOT_CHANGED", "ACTIONBAR_PAGE_CHANGED", "UPDATE_BONUS_ACTIONBAR", "PLAYER_ENTERING_WORLD", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED" }) do
     ev:RegisterEvent(e)
 end
@@ -809,6 +925,11 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         or event == "UPDATE_BONUS_ACTIONBAR" or event == "PLAYER_ENTERING_WORLD"
         or event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
         if ChordsDB and ChordsDB.groups then Chords:QueueAnchor() end
+    elseif event == "SPELL_UPDATE_COOLDOWN" or event == "BAG_UPDATE_COOLDOWN" then
+        Chords:UpdateCooldowns()
+    elseif event == "SPELLS_CHANGED" then
+        Chords:RefreshRanks()
+        if Chords.Editor and Chords.Editor.Refresh then Chords.Editor:Refresh() end
     elseif event == "UPDATE_MACROS" then
         if ChordsDB and ChordsDB.groups and Chords.AdoptMacroIcons() then
             if Chords.Editor and Chords.Editor.Refresh then Chords.Editor:Refresh() end

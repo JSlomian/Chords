@@ -3,7 +3,7 @@
 -- All edits write straight into ChordsDB and call Chords:Rebuild(); locked during combat.
 
 local Chords = _G.Chords
-local E = { drafts = {}, spells = {} }
+local E = { drafts = {}, spells = {}, items = {} }
 Chords.Editor = E
 local selected
 local picker -- icon picker frame, created below
@@ -36,22 +36,88 @@ local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
 ---------------------------------------------------------------------------
 
 function E:ScanSpells()
-    local list, seen = {}, {}
-    local getName = GetSpellBookItemName or GetSpellName
-    if not getName or not GetNumSpellTabs then self.spells = list return end
-    for t = 1, GetNumSpellTabs() do
-        local _, _, offset, num = GetSpellTabInfo(t)
-        for i = (offset or 0) + 1, (offset or 0) + (num or 0) do
-            local name = getName(i, "spell")
-            if name and not seen[name] and not (IsPassiveSpell and IsPassiveSpell(i, "spell")) then
-                seen[name] = true
-                local _, icon = Chords.spellKnown(name)
-                list[#list + 1] = { name = name, icon = icon }
+    local list, seen, ranked = {}, {}, {}
+    local function add(name, passive, sub)
+        if not name or passive then return end
+        local rank = sub and tonumber(sub:match("(%d+)"))
+        local id = rank and (name .. "(Rank " .. rank .. ")")
+        if not seen[name] then
+            seen[name] = true
+            local _, icon = Chords.spellKnown(name)
+            list[#list + 1] = { name = name, icon = icon }
+            if not rank then ranked[#ranked + 1] = list[#list] end
+        end
+        if rank then
+            local _, icon = Chords.spellKnown(id)
+            ranked[#ranked + 1] = { name = ("%s (Rank %d)"):format(name, rank), value = id, icon = icon, rank = rank, base = name }
+        end
+    end
+    local SB = C_SpellBook
+    if SB and SB.GetNumSpellBookSkillLines and SB.GetSpellBookSkillLineInfo then
+        -- modern API
+        local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or "spell"
+        for t = 1, SB.GetNumSpellBookSkillLines() do
+            local info = SB.GetSpellBookSkillLineInfo(t)
+            if info then
+                local offset, num = info.itemIndexOffset or 0, info.numSpellBookItems or 0
+                for i = offset + 1, offset + num do
+                    local name, sub = SB.GetSpellBookItemName(i, bank)
+                    local passive = SB.IsSpellBookItemPassive and SB.IsSpellBookItemPassive(i, bank)
+                    add(name, passive, sub)
+                end
+            end
+        end
+    else
+        -- legacy API
+        local getName = GetSpellBookItemName or GetSpellName
+        if getName and GetNumSpellTabs and GetSpellTabInfo then
+            for t = 1, GetNumSpellTabs() do
+                local _, _, offset, num = GetSpellTabInfo(t)
+                for i = (offset or 0) + 1, (offset or 0) + (num or 0) do
+                    local name, sub = getName(i, "spell")
+                    add(name, IsPassiveSpell and IsPassiveSpell(i, "spell"), sub)
+                end
             end
         end
     end
     table.sort(list, function(a, b) return a.name < b.name end)
-    self.spells = list
+    table.sort(ranked, function(a, b)
+        local an, bn = a.base or a.name, b.base or b.name
+        if an ~= bn then return an < bn end
+        return (a.rank or 0) < (b.rank or 0)
+    end)
+    self.spells, self.rankedSpells = list, ranked
+end
+
+-- on-use items from bags and equipped slots
+function E:ScanItems()
+    local list, seen = {}, {}
+    local function add(id, equipped)
+        if not id then return end
+        local name = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(id)) or (GetItemInfo and GetItemInfo(id))
+        if not name or seen[name] then return end
+        local getSpell = (C_Item and C_Item.GetItemSpell) or GetItemSpell
+        if not getSpell or not getSpell(id) then return end -- no on-use effect
+        seen[name] = true
+        local icon = (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(id)) or select(10, GetItemInfo(id))
+        list[#list + 1] = { name = name, icon = icon, value = "item:" .. name, equipped = equipped, item = true }
+    end
+    -- equipped (slots 1-19)
+    for slot = 1, 19 do add(GetInventoryItemID("player", slot), true) end
+    -- bags
+    local C = C_Container
+    local numSlots = (C and C.GetContainerNumSlots) or GetContainerNumSlots
+    local itemID = function(bag, slot)
+        if C and C.GetContainerItemID then return C.GetContainerItemID(bag, slot) end
+        if GetContainerItemID then return GetContainerItemID(bag, slot) end
+    end
+    if numSlots then
+        for bag = 0, (NUM_BAG_SLOTS or 4) do
+            for slot = 1, (numSlots(bag) or 0) do add(itemID(bag, slot), false) end
+        end
+    end
+    table.sort(list, function(a, b) return a.name < b.name end)
+    self.items = list
 end
 
 ---------------------------------------------------------------------------
@@ -141,18 +207,35 @@ bSearch:SetSize(200, 22)
 bSearch:SetPoint("TOP", 0, -42)
 bSearch:SetAutoFocus(false)
 
+local refreshBrowser -- defined below
+
+local ranksCB = CreateFrame("CheckButton", nil, browser, "UICheckButtonTemplate")
+ranksCB:SetSize(22, 22)
+ranksCB:SetPoint("TOPLEFT", 18, -66)
+ranksCB.text = ranksCB:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+ranksCB.text:SetPoint("LEFT", ranksCB, "RIGHT", 2, 0)
+ranksCB.text:SetText("Show ranks")
+ranksCB:SetScript("OnClick", function(self)
+    ChordsDB.showRanks = self:GetChecked() and true or nil
+    refreshBrowser()
+end)
+
 local bScroll = CreateFrame("ScrollFrame", "ChordsSpellScroll", browser, "UIPanelScrollFrameTemplate")
-bScroll:SetPoint("TOPLEFT", 18, -72)
+bScroll:SetPoint("TOPLEFT", 18, -92)
 bScroll:SetPoint("BOTTOMRIGHT", -36, 18)
 local bContent = CreateFrame("Frame", nil, bScroll)
 bContent:SetSize(200, 10)
 bScroll:SetScrollChild(bContent)
 local bBtns = {}
 
-local function refreshBrowser()
-    local q = bSearch:GetText():lower()
+function refreshBrowser()
+    local q =bSearch:GetText():lower()
     local n = 0
-    for _, s in ipairs(E.spells) do
+    local all = {}
+    local showRanks = ChordsDB and ChordsDB.showRanks
+    for _, s in ipairs((showRanks and E.rankedSpells) or E.spells) do all[#all + 1] = s end
+    for _, s in ipairs(E.items) do all[#all + 1] = s end
+    for _, s in ipairs(all) do
         if q == "" or s.name:lower():find(q, 1, true) then
             n = n + 1
             local b = bBtns[n]
@@ -176,9 +259,13 @@ local function refreshBrowser()
                 end)
                 bBtns[n] = b
             end
-            b.spell = s.name
+            b.spell = s.value or s.name
             b.icon:SetTexture(s.icon)
-            b.text:SetText(s.name)
+            if s.item then
+                b.text:SetText(s.name .. (s.equipped and " |cff66ccff(worn)|r" or " |cff888888(item)|r"))
+            else
+                b.text:SetText(s.name)
+            end
             b:Show()
         end
     end
@@ -190,9 +277,11 @@ bSearch:SetScript("OnEscapePressed", bSearch.ClearFocus)
 
 local function openBrowser(r)
     E:ScanSpells()
+    E:ScanItems()
     if picker then picker:Hide() end
     browser.target = r
     bSearch:SetText("")
+    ranksCB:SetChecked(ChordsDB.showRanks and true or false)
     refreshBrowser()
     browser:Show()
 end
@@ -337,6 +426,9 @@ local function makeRow(i)
     r.icon = r:CreateTexture(nil, "ARTWORK")
     r.icon:SetSize(22, 22)
     r.icon:SetPoint("LEFT", r.keyBtn, "RIGHT", 6, 0)
+
+    r.rankText = r:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+    r.rankText:SetPoint("BOTTOMRIGHT", r.icon, "BOTTOMRIGHT", 0, 0)
 
     r.edit = CreateFrame("EditBox", nil, r, "InputBoxTemplate")
     r.edit:SetSize(190, 22)
@@ -498,6 +590,8 @@ showCB:SetScript("OnClick", function(self)
     Chords:Rebuild()
 end)
 
+local stayCB -- created after enterClear below
+
 local enterLabel = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 enterLabel:SetPoint("TOPLEFT", 200, -94)
 enterLabel:SetText("Open with key:")
@@ -523,6 +617,24 @@ enterClear:SetScript("OnClick", function()
     Chords:Rebuild()
     E:Refresh()
 end)
+
+stayCB = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+stayCB:SetSize(24, 24)
+stayCB:SetPoint("BOTTOMLEFT", 330, 21)
+stayCB.text = stayCB:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+stayCB.text:SetPoint("LEFT", stayCB, "RIGHT", 2, 0)
+stayCB.text:SetText("Stay open after cast")
+stayCB:SetScript("OnClick", function(self)
+    if locked() or not selected then self:SetChecked(not self:GetChecked()) return end
+    ChordsDB.groups[selected].stay = self:GetChecked() and true or nil
+    Chords:Rebuild()
+end)
+stayCB:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Casting doesn't close the chord. A key pressed during the GCD fails harmlessly and the chord stays open. Close with Esc or the open key.", 1, 1, 1, 1, true)
+    GameTooltip:Show()
+end)
+stayCB:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 local macroBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
 macroBtn:SetSize(110, 24)
@@ -640,7 +752,7 @@ function E:Refresh()
     -- header
     local grp = selected and ChordsDB.groups[selected]
     noGroup:SetShown(not grp)
-    for _, w in ipairs({ iconBtn, gName, nameHint, showCB, enterLabel, enterBtn, enterClear, macroBtn, delGroup, addEntry, scroll }) do
+    for _, w in ipairs({ iconBtn, gName, nameHint, showCB, stayCB, enterLabel, enterBtn, enterClear, macroBtn, delGroup, addEntry, scroll }) do
         w:SetShown(grp ~= nil)
     end
     if not grp then
@@ -649,6 +761,7 @@ function E:Refresh()
     end
     gName:SetText(selected)
     showCB:SetChecked(grp.show and true or false)
+    stayCB:SetChecked(grp.stay and true or false)
     macroBtn:SetEnabled(not grp.show)
     iconBtn.tex:SetTexture(grp.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
     enterBtn:SetText(grp.enter or "(none)")
@@ -674,6 +787,9 @@ function E:Refresh()
         r.edit:SetCursorPosition(0)
         r.edit:SetTextColor(1, 1, 1)
         r.icon:SetTexture(actionIcon(act))
+        local rank, explicit = Chords.spellRank(act.spell)
+        r.rankText:SetText(rank or "")
+        if explicit then r.rankText:SetTextColor(1, 0.82, 0) else r.rankText:SetTextColor(1, 1, 1) end
     end
     for _, d in ipairs(E.drafts[selected] or {}) do
         local r = row()
@@ -682,6 +798,7 @@ function E:Refresh()
         r.edit:SetText(d.text or "")
         r.edit:SetTextColor(1, 1, 1)
         r.icon:SetTexture(nil)
+        r.rankText:SetText("")
     end
     for i = n + 1, #rows do rows[i]:Hide() end
     content:SetHeight(math.max(n * ROW_H, 10))
